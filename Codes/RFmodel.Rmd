@@ -1,0 +1,404 @@
+---
+title: "Pumping it up!"
+author: "Rahul.P.R"
+date: "16 July 2017"
+output:
+  word_document: default
+  html_document: default
+---
+```{r,echo=FALSE,message=FALSE,warning=FALSE}
+library(ggplot2)
+library(googleVis)
+library(reshape2)
+library(MLmetrics)
+library(randomForest)
+library(e1071)
+library(knitr)
+library(caret)
+```
+
+The problem in hand is to predict pum performance typically classified into a three class response variable namely, function, non-functional and functional needs repair. The pumps here are typically hand pumps installed in Tanzania, Africa and is obviously a much-needed source of water. The data comes Taarifa waterpoints dashboard an open source platform facilitating crowdsourced/public reporting of civic issues to the government to ensure effective functioning.
+
+```{r,echo=FALSE,results='hide'}
+
+# Reading the data
+train_values<-read.csv("E:/Competitions and Github/Tanzania Pumps/Data/train.csv")
+test_data<-read.csv("E:/Competitions and Github/Tanzania Pumps/Data/test.csv")
+
+# Dependent variable for train data
+train_labels<-read.csv("E:/Competitions and Github/Tanzania Pumps/Data/dependent.csv")
+
+# Creating one dataset
+train_data<-merge(train_values,train_labels)
+
+# Removing unwanted datasets
+rm(train_labels,train_values)
+```
+
+The data as in all competitions is split into train and test with train dataset obviously having response variables and test data needing predictions using a model which is trained. The train data comprises of `r row(train_data)` records and `r ncol(train_data)-1` variables. The test/unseen data needing predictions on the above mentioned three classes consits of `r nrow(test_data)`. Here, in this exercise I have used the ever-dependent randomforest to build a model on the train dataset. Starting with some snapshots of the data followed by cleaning and some simple feature engineering,
+
+I personally employ the below summary rather than the "summary" provided by R. Here, the split of variable class is identified helping us to understand the nature of the dataset and also helps us in obtaining a view of the exploratory analysis required going ahead.So, the split is
+
+```{r,echo=FALSE,results='hide'}
+fac<-round(((length(which(lapply(train_data,class)=="factor"))-1)/(ncol(train_data)-1))*100,digits=4)
+num<-round(((length(which(lapply(train_data,class)=="numeric")))/(ncol(train_data)-1))*100,digits=4)
+int<-round(((length(which(lapply(train_data,class)=="integer")))/(ncol(train_data)-1))*100,digits=4)
+```
+
+`r fac` of the data consists of factors, `r num` of numeric variables and finally `r int` of integer variables. There were no character variables in the dataset. Now, some very basic feature engineering - only for two variables funder and installer
+
+```{r,echo=FALSE,results='hide'}
+
+# Retaining only 3 small case letters of each observation in installer->Special characters
+# specifically for mis-entering "gov" as "other"->naming other than top 10 also as "others"
+
+train_data$installer_group<-substr(tolower(train_data$installer),1,3)
+train_data$installer_group[train_data$installer_group %in% c(" ", "", "0", "_", "-")] <- "other"
+
+# Take the top 15 substrings from above by occurence frequency and name the remaining others as "Others"
+# Since the number of factors to analyze or view is very high and not understandable
+
+install_top_15 <- names(summary(as.factor(train_data$installer_group)))[1:15]
+train_data$installer_group[!(train_data$installer_group %in% install_top_15)] <- "other"
+train_data$installer_group <- as.factor(train_data$installer_group)
+
+# Similarly, For test
+
+test_data$installer_group <- substr(tolower(test_data$installer),1,3)
+test_data$installer_group[test_data$installer_group %in% c(" ", "", "0", "_", "-")] <- "other"
+test_data$installer_group[!(test_data$installer_group %in% install_top_15)] <- "other"
+test_data$installer_group <- as.factor(test_data$installer_group)
+
+# Similarly doing for funder variable
+
+# Train
+
+train_data$funder_group<-tolower(train_data$funder)
+train_data$funder_group[train_data$funder_group %in% c(""," ","0","_","-")]<-"other"
+train_data$funder_group[!(train_data$funder_group %in% names(summary(as.factor(train_data$funder_group)))[1:15])]<-"other"
+train_data$funder_group<-as.factor(train_data$funder_group)
+
+# Test
+
+test_data$funder_group<-tolower(test_data$funder)
+test_data$funder_group[test_data$funder_group %in% c(""," ","0","_","-")]<-"other"
+test_data$funder_group[!(test_data$funder_group %in% names(summary(as.factor(train_data$funder_group)))[1:15])]<-"other"
+test_data$funder_group<-as.factor(test_data$funder_group)
+
+# Imputation for permit variable
+
+train_data$permit<-as.character(train_data$permit)
+train_data[which(train_data$permit==""),"permit"]<-"unknown"
+train_data$permit<-as.factor(train_data$permit)
+
+test_data$permit<-as.character(test_data$permit)
+test_data[which(test_data$permit==""),"permit"]<-"unknown"
+test_data$permit<-as.factor(test_data$permit)
+
+# Imputation for public meeting variable
+
+train_data$public_meeting<-as.character(train_data$public_meeting)
+train_data[which(train_data$public_meeting==""),"public_meeting"]<-"unknown"
+train_data$public_meeting<-as.factor(train_data$public_meeting)
+
+test_data$public_meeting<-as.character(test_data$public_meeting)
+test_data[which(test_data$public_meeting==""),"public_meeting"]<-"unknown"
+test_data$public_meeting<-as.factor(test_data$public_meeting)
+
+# Imputation for public meeting variable
+
+train_data$scheme_management<-as.character(train_data$scheme_management)
+train_data[which(train_data$scheme_management==""),"scheme_management"]<-"unknown"
+train_data$scheme_management<-as.factor(train_data$scheme_management)
+
+test_data$scheme_management<-as.character(test_data$scheme_management)
+test_data[which(test_data$scheme_management==""),"scheme_management"]<-"unknown"
+test_data$scheme_management<-as.factor(test_data$scheme_management)
+
+```
+
+**Feature Selection**
+
+To start with variables were selected intutively and some totally unwanted varaibles like ID's, reporting were not considered at all. Manually going through the variables I myself have split them into four different sections and the variables intutively selected are mentioned below:
+
+**Variables related to the pump/waterpoint**
+
+1.amount_tsh - static water head
+2.construction_year - year when the well was constructed
+3.extraction_type_group - extraction type/extraction_type_class are also similar variables and they are branched/corrected accordingly
+4.gps_height - altitude of the well
+5.Permit - permit to use the pump
+6.waterpoint_type - place/type of waterpoint ex. hand/communal standpipe
+
+**Variables related to water**
+
+7.quantity/qunatity_group - amount of water ex. dry, enough etc.,
+8.water_quality - ex. soft, hard
+9.source_type - ex. dam, shallow well
+
+**Variables related to Organization**
+
+10. installer - converted to usable installer_group
+11. scheme_management - organization managing the waterpoint - imputation is done similar to permit and public meeting where there were empty values
+12. payment_type
+
+**Variables related to location**
+
+13. Considering lat long which is the lowest that one can get to the location hence not considering district,ward etc.,
+14. Population - population around the waterpoint
+15. Public meeting - Yes/No
+
+From manual shortlisting we have zeroed in on 30%-40% of the total number of variables in the dataset which is also a thumb rule. We would, if possible, reduce the number of variables by doing some exploratory analysis
+
+For a categorical variable a typical plot is in the below way:
+
+```{r,echo=FALSE}
+qplot(quantity_group,data = train_data,geom = "bar",fill=status_group)+
+        theme(legend.position="top")
+```
+
+As seen above, dry and enough levels of quantity_grup variable seem to influence the response variable highly i.e., the variable is highly homogeneous and may result in one of the higher decision nodes. Technically, quantity_group is a pure node and it would require less entropy/less information to define the varaible compared to other variables in the dataset. If it had been a binary level variable then Gini index could be used for which also the lesser the Gini index important the variable is. So, similar plots were iteratively plotted across the categorical variables mentioned above and following was the observation
+
+1. **Neglect** -> Installer group - doesnt seem to influence any level in the response variable particularly
+2. **Consider** - Funder group - One level (Govt. of tanzania) seems to have slightly higher influence on non-functional/functional needs repair 
+3. **Neglect** - Permit 
+4. **Consider** - waterpoint_type - "other" level has lot of non-functional whereas communal standpipe and hand pump has high proportion of functional
+5. **Consider** - Extraction type group - homogeneous variable with levels like gravity, nira/tanira and "other" are influencing on the response
+6. **Neglect** - water_quality - only soft class but it is almost heterogeneous
+7. **Neglect** - source_type - only spring has some influence and again heterogeneous
+8. **Neglect** - scheme_management - similar to the above
+9. **Consider** - payment_type - highly influencing since there are clear patterns
+10.**Consider**- public meeting - slightly important
+
+Out of the 11 categorical variables listed above we have "considered" 6 thereby reducing the variables more. Use of many variable may end up in overfitting for any model (esp. more in a tree model) i.e., a low bias and high varaince model. In other words, the model works well on the train but fails miserably on test data/unseen cases.
+
+Now, for a continuous variable
+
+```{r,echo=FALSE}
+ggplot(subset(train_data,construction_year>0), aes(x = construction_year)) + 
+        geom_histogram(bins = 20) + 
+        facet_grid( ~ status_group)
+```
+
+Out of the 4 continuous variables i.e., amount_tsh, population, gps_height and construction_year only the latter variable looked important (as shown above) and hence the three other variables were not used in the model for prediction. Apart from all these 7 variables lat, long was mandatorily considered as a variable since intutively location influences
+
+Finally, as mentioned earlier randomforest model was used to train the model on the "train" dataset and two approaches are shown here since model validation was attempted in two different ways
+
+**Case 1:**
+
+**Modeling:**
+
+```{r,echo=FALSE}
+model_forest_base<-randomForest(as.factor(status_group)~quantity_group+latitude+longitude+waterpoint_type+construction_year+extraction_type_group+payment_type+public_meeting+funder_group,importance=TRUE,data = train_data,ntree=500,nodesize=2)
+```
+
+Random forest the ever dependable model amazingly helps us in identifying the importance of the variables we considered. The importance of the variables as you see in the below graphs aids in constructing of the nodes, sub-nodes, decision nodes and leaf/terminal nodes. 
+
+```{r,echo=FALSE}
+importance(model_forest_base)
+```
+
+The smaller the MeanDecreaseAccuracy/MeanDecreaseGini for a variable the smaller the effect on the prediction. MeanDecreaseAccuracy simply mentions the decrease in teh accuracy of the model if the corresponding variable is removed and the same goes with Gini as well.We could see from both the plots for example that **quantity_group** is the most important variable
+
+```{r,echo=FALSE}
+varImpPlot(model_forest_base)
+```
+
+**Model validation:**
+
+K-fold cross validation is typically used when there is no response variable in the test dataset but you are ought to evaluate your model which was run on the train dataset. K fold cross validation typically works by creating K different samples of equal proportion followed by running the specified model on k-1 subsamples of the train dataset. The left out kth sample is used for testing the latter obtained model. 
+
+This is repeated k times where all the k samples are used for both training and testing iteratively (thumb rule is to have K-value as 10 therefore train dataset is split into 10 equal size samples - 59400/10). Once done, the aggregate model's acurracy/mean squared error is considered as a representative of the test data's accuracy
+
+Though there are package built functions available in r I have written here a piece of code which replicates K fold cross validation function/ However, in this code I have also tried to implement stratified random sampling without replacement for the k subsamples since this is an imbalanced data set. The proportion of the three levels in the response variable is 
+
+```{r,echo=FALSE}
+response_proportion<-data.frame(round(prop.table(table(train_data$status_group))*100,digits=4))
+kable(response_proportion)
+```
+
+The samples were also stratified based on this proportion
+
+```{r,echo=FALSE,results='hide'}
+
+# Creating two empty datasets to add each other over iterations
+
+prediction<-data.frame()
+
+prediction_prob<-data.frame()
+
+testing<-data.frame()
+
+# Creating class level individual datasets to enable stratified sampling esp for imbalanced datasets
+
+functional_needs_repair<-train_data[which(train_data$status_group=="functional needs repair"),]
+
+functional<-train_data[which(train_data$status_group=="functional"),]
+
+non_functional<-train_data[which(train_data$status_group=="non functional"),]
+
+# Loop
+
+# removing rows with id i for every loop to create the test data set and other ids which is other than i are considered as train dataset
+
+for(i in 1:10)
+{
+
+print(i)
+        
+# stratified sample creation
+
+# Test data with proportions as in the actual dataset
+set.seed(i)
+fnr_smp_size<-floor(0.073*5940)
+fnr_id<-sample(seq_len(nrow(functional_needs_repair)),fnr_smp_size,replace = FALSE)
+functional_needs_repair_sample_test<-functional_needs_repair[fnr_id,]
+
+j=i+1
+set.seed(j)
+f_smp_size<-floor(0.5431*5940)
+f_id<-sample(seq_len(nrow(functional)),f_smp_size,replace = FALSE)
+functional_sample_test<-functional[f_id,]
+
+k=i+2
+set.seed(k)
+nf_smp_size<-floor(0.3842*5940)
+nf_id<-sample(seq_len(nrow(non_functional)),nf_smp_size,replace = FALSE)
+non_functional_sample_test<-non_functional[nf_id,]
+
+testset <- rbind(functional_needs_repair_sample_test,functional_sample_test,non_functional_sample_test)
+
+# Now, sample other than in the test/each of these datasets should form the train. Instead of sample id's once created we are using the id's provided in the dataset to avoid overlap of records
+
+# Invoking the same set.seed so that the sample doesnt change
+
+functional_needs_repair_sample_train<-functional_needs_repair[-fnr_id,]
+
+functional_sample_train<-functional[-f_id,]
+
+non_functional_sample_train<-non_functional[-nf_id,]
+
+trainingset <- rbind(functional_needs_repair_sample_train,functional_sample_train,non_functional_sample_train)
+ 
+#run a random forest model
+
+model_cv <- randomForest(as.factor(trainingset$status_group)~quantity_group+latitude+longitude+waterpoint_type+construction_year+extraction_type_group+payment_type+public_meeting+funder_group,data = trainingset, ntree = 500,nodesize=2)
+ 
+#remove response column 1, Sepal.Length
+
+temp <- as.data.frame(predict(model_cv, testset[,c("quantity_group","latitude","longitude","waterpoint_type","construction_year","extraction_type_group","payment_type","public_meeting","funder_group")]))
+
+# append this iteration's predictions to the end of the prediction data frame
+
+prediction <- rbind(prediction, temp)
+
+# append this iteration's test set to the testing data frame
+
+testing <- rbind(testing, as.data.frame(testset$status_group))
+}
+
+# add predictions and actual Sepal Length values
+
+result <- data.frame(cbind(prediction[,1], testing[,1]))
+colnames(result) <- c("Predicted", "Actual")
+
+```
+
+The confusion matrix and the model accuracy post cross validation is shown below:
+
+```{r,echo=FALSE}
+confusionMatrix(result$Actual,result$Predicted)
+```
+
+** No. of variables vs. Model accuracy**
+
+The rfcv function built in the randomForest package provides us with the error associated with the model based on the number of variables considered for the same. The below plot shows us the same:
+
+```{r,echo=FALSE}
+varn_imp<-rfcv(trainx = train_data[,c("quantity_group","latitude","longitude","waterpoint_type","construction_year","extraction_type_group","payment_type","public_meeting","funder_group")],trainy = train_data$status_group,step = 0.5)
+
+with(varn_imp,plot(n.var, error.cv, log="x", type="o", lwd=2))
+```
+
+Case 2:
+
+In this case, the provided train dataset is itself split into a train and test dataset and the model built on the latter mentioned train data set is used to predict on the test dataset thereby obtaining the accuracy of the model on an unseen data. Here, confusion matrix, precision, recall, f-score, ROC curves are slighlty difficult since they are very much suitable on a binary classifier. Though I have obtained precision, recall and f-scores, logloss function is a better measure of accuracy of multi class variables
+
+```{r,echo=FALSE,results='hide'}
+
+# Stratifying the train and test used fr modeling. Here there are no k-folds
+
+set.seed(121)
+test_fnr_smp_size<-floor(0.073*17820)
+test_fnr_id<-sample(seq_len(nrow(functional_needs_repair)),test_fnr_smp_size,replace = FALSE)
+test_fnr<-functional_needs_repair[test_fnr_id,]
+
+set.seed(122)
+test_fn_smp_size<-floor(0.5431*17820)
+test_fn_id<-sample(seq_len(nrow(functional)),test_fn_smp_size,replace = FALSE)
+test_fn<-functional[test_fn_id,]
+
+set.seed(123)
+test_nf_smp_size<-floor(0.3842*17820)
+test_nf_id<-sample(seq_len(nrow(non_functional)),test_nf_smp_size,replace = FALSE)
+test_nf<-non_functional[test_nf_id,]
+
+real_test<-rbind(test_fnr,test_fn,test_nf)
+
+##### Now, for train
+
+train_fnr<-functional_needs_repair[-test_fnr_id,]
+train_fn<-functional[-test_fn_id,]
+train_nf<-non_functional[-test_nf_id,]
+
+real_train<-rbind(train_fnr,train_fn,train_nf)
+
+# Running the same random forest model on the real_train dataset
+
+set.seed(07)
+
+model_forest_normaltest<-randomForest(as.factor(status_group)~quantity_group+latitude+longitude+waterpoint_type+construction_year+extraction_type_group+payment_type+public_meeting+funder_group,importance=TRUE,data = real_train,ntree=500,nodesize=2)
+
+```
+
+```{r,echo=FALSE}
+
+# Predicting on real_test
+###### Logloss
+
+pred_real_test_logloss<-predict(model_forest_normaltest,real_test,type = "prob") #
+loglossval<-MultiLogLoss(pred_real_test_logloss,real_test$status_group)
+
+```
+
+`r loglossval` is the logloss value which should be studied as lower the value of logloss better is the accuracy of the model
+
+The typical confusion matrix results in this case 2 validation method is shown here:
+
+```{r,echo=FALSE}
+
+##### Now,typical prediction and obtaining confusion matrix
+pred_real_test_cm<-predict(model_forest_normaltest,real_test)
+
+# Confusion matrix
+confusionMatrix(real_test$status_group,pred_real_test_cm)
+```
+
+Since the validations are satisfactory, let us use the same model to predict on the test dataset and the files are place in the below path
+
+`r "E:/Competitions and Github/results/"`
+
+```{r,echo=FALSE}
+
+# Predict using the test values
+pred_forest_test_base <- predict(model_forest_base, test_data)
+pred_forest_test_normaltest<-predict(model_forest_normaltest,test_data)
+
+# final data to be submitted
+
+final_base<-data.frame(test_data$id,pred_forest_test_base)
+write.csv(final_base,"E:/Competitions and Github/Tanzania Pumps/Results/test_labels_base.csv",row.names = FALSE)
+
+final_normaltest<-data.frame(test_data$id,pred_forest_test_normaltest)
+write.csv(final_normaltest,"E:/Competitions and Github/Tanzania Pumps/Results/test_labels_normaltest.csv",row.names = FALSE)
+```
