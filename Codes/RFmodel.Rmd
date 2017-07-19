@@ -2,9 +2,6 @@
 title: "Pumping it up!"
 author: "Rahul.P.R"
 date: "16 July 2017"
-output:
-  word_document: default
-  html_document: default
 ---
 ```{r,echo=FALSE,message=FALSE,warning=FALSE}
 library(ggplot2)
